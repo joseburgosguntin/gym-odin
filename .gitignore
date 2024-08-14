@@ -1,0 +1,6 @@
+.env
+node_modules
+ols.json
+gym-odin
+*.bin
+static/output.css

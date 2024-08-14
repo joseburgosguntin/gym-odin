@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Routines - Gym</title>
+    <link href="output.css" rel="stylesheet" />
+    <script src="htmx@2.0.0.js"></script>
+  </head>
+
+  <body>
+    <header hx-boost="true" class="navbar bg-base-300 sticky top-0 z-10">
+      <div class="navbar-start"></div>
+      <div class="navbar-center">
+        <a href="/" class="text-primary font-bold text-xl">Gym</a>
+      </div>
+      <div class="navbar-end"></div>
+    </header>
+
+    <main class="px-4 pt-4 min-h-[80dvh]">
+      <div class="w-full mx-auto">
+        <div class="">
+          <div
+            class="my-20 card shrink-0 w-full max-w-sm shadow-2xl bg-base-200 p-4"
+          >
+            <div hx-boost="false" class="card-body">
+              <h1 class="text-2xl font-bold text-center">
+                Log in to Gym Routine
+              </h1>
+              <p class="mb-4 text-center">To keep track of your workouts.</p>
+              <a
+                type="button"
+                class="btn bg-base-300 justify-start pl-10 pr-auto"
+                href="/google_login?return_url=%2Fedit"
+              >
+                <img
+                  class="h-6 w-6"
+                  src="/company/google.png"
+                  alt="Google logo in sign in with Google button"
+                />
+                Continue with Google</a
+              >
+              <!-- <button -->
+              <!--   type="button" -->
+              <!--   class="btn bg-base-300 justify-start pl-10 pr-auto" -->
+              <!-- > -->
+              <!--   <img -->
+              <!--     class="h-6 w-6" -->
+              <!--     src="/company/facebook_blue.png" -->
+              <!--     alt="Facebook logo in sign in with Facebook button" -->
+              <!--   /> -->
+              <!--   Continue with Facebook -->
+              <!-- </button> -->
+              <!-- <button -->
+              <!--   type="button" -->
+              <!--   class="btn bg-base-300 justify-start pl-10 pr-auto" -->
+              <!-- > -->
+              <!--   <img -->
+              <!--     alt="github" -->
+              <!--     class="h-6 w-6 my-0 hidden dark:block" -->
+              <!--     src="/company/github_white.png" -->
+              <!--   /> -->
+              <!--   Continue with Github -->
+              <!-- </button> -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
