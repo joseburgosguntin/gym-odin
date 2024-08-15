@@ -108,13 +108,31 @@ serve :: proc() {
 
 	// TODO: merge routine and exercises to a single route
 	http.route_get(&authed, "/", http.handler(index))
+	http.route_get(&authed, "/edit", http.handler(edit))
 	http.route_get(&authed, "/exercises", http.handler(exercises))
+	http.route_get(&authed, "/routine", http.handler(routine))
+	http.route_get(&authed, "/edit/routines", http.handler(edit_routines))
 	http.route_get(&authed, "/routines", http.handler(routines))
 	http.route_get(&authed, "/sets", http.handler(sets))
+	http.route_get(&authed, "/logout", http.handler(logout))
 
+	http.route_post(
+		&authed,
+		"/routine_exercise",
+		http.handler(post_routine_exercise),
+	)
+	http.route_post(&authed, "/routine", http.handler(post_routine))
 	http.route_post(&authed, "/set", http.handler(post_set))
 
+	http.route_delete(
+		&authed,
+		"/routine_exercise",
+		http.handler(delete_routine_exercise),
+	)
+	http.route_delete(&authed, "/routine", http.handler(delete_routine))
 	http.route_delete(&authed, "/set", http.handler(delete_set))
+
+	http.route_patch(&authed, "/weekday", http.handler(toggle_weekday))
 
 	routed := authed_unauthed_handler(
 		&{authed = &authed, unauthed = &unauthed},

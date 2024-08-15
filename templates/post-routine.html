@@ -1,0 +1,23 @@
+<form
+  id="post-routine"
+  hx-post="routine"
+  hx-swap="beforebegin"
+  x-data="{ inputValue: '' }"
+  hx-on::afterSend="inputValue = ''"
+  class="flex gap-2"
+>
+  <button
+    class="group-item btn btn-square btn-success btn-outline"
+    :disabled="!inputValue"
+  >
+    +
+  </button>
+  <input
+    class="input input-success input-bordered"
+    placeholder="Type New Routine..."
+    _="on htmx:afterSend alert('hey')"
+    name="routine_name"
+    x-model="inputValue"
+    type="text"
+  />
+</form>

@@ -1,0 +1,16 @@
+<!-- name = %[0]s -->
+<!-- routine_id = %[1]d -->
+<!-- exercise_id = %[2]d -->
+<li>
+  <form
+    hx-delete="routine_exercise"
+    hx-target="closest li"
+    hx-swap="outerHTML"
+    class="flex gap-2"
+  >
+    <button class="group-item btn btn-square btn-error btn-outline">✕</button>
+    <input type="hidden" name="routine_id" value="%[1]d" />
+    <input type="hidden" name="exercise_id" value="%[2]d" />
+    <span class="my-auto text-lg"> %[0]s </span>
+  </form>
+</li>
