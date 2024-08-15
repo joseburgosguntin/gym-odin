@@ -64,6 +64,14 @@ serve :: proc() {
 	http.router_init(&unauthed)
 	defer http.router_destroy(&unauthed)
 
+	http.route_get(&unauthed, "/google_login", http.handler(google_login))
+	http.route_get(
+		&unauthed,
+		"/google_callback",
+		http.handler(google_callback),
+	)
+	http.route_get(&unauthed, "(.*)", http.handler(static))
+
 	authed: http.Router
 	http.router_init(&authed)
 	defer http.router_destroy(&authed)
