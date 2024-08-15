@@ -22,10 +22,11 @@ Any other distributions or versions have not been tested and might not work.
 ## Dependencies
 
 The *client* package depends on OpenSSL for making HTTPS requests.
+This repository contains a copy of these libraries for ease of use on Windows and Darwin.
 
-This repository contains a copy of these libraries for ease of use on Windows.
-
-For Linux, most distros come with OpenSSL, if not you can install it with a package manager, usually under `libssl3`.
+For Linux, most distros come with OpenSSL, if not you can install it by doing something like this:
+- `sudo apt-get install openssl libssl-dev`
+- `apk add openssl openssl-libs-static`
 
 ## Performance
 
