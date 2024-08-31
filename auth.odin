@@ -2,7 +2,7 @@ package main
 
 import "core:bytes"
 import "core:crypto"
-import "core:crypto/sha3"
+import "core:crypto/sha2"
 import "core:encoding/base64"
 import "core:encoding/json"
 import "core:encoding/uuid"
@@ -56,14 +56,20 @@ env_google :: proc() {
 	GOOGLE_CLIENT_SECRET = google_client_secret
 }
 
-@(thread_local) local_user_id: i32
-@(thread_local) local_ok_user_id: bool
+@(thread_local)
+local_user_id: i32
+@(thread_local)
+local_ok_user_id: bool
 
 get_user_id :: proc(conn: pq.Conn, req: ^http.Request) -> (s: i32, ok: bool) {
-	token := http.request_cookie_get(req, "session_token") or_return
+	token, ok_token := http.request_cookie_get(req, "session_token")
+	if !ok_token {
+		log.warn("no session token in cookies")
+		return
+	}
 	split := strings.index_byte(token, '_')
 	if split == -1 {
-		log.error("couldn't split")
+		log.error("couldn't split cookie by '_'")
 		return
 	}
 	p1, p2 := token[:split], token[min(split + 1, len(token)):]
@@ -74,7 +80,10 @@ get_user_id :: proc(conn: pq.Conn, req: ^http.Request) -> (s: i32, ok: bool) {
 		p1,
 	)
 	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Tuples_OK do return
+	if pq.result_status(query_res) != .Tuples_OK {
+		log.error("could find session token in db")
+		return
+	}
 	defer pq.clear(query_res)
 
 	Result :: struct {
@@ -84,13 +93,19 @@ get_user_id :: proc(conn: pq.Conn, req: ^http.Request) -> (s: i32, ok: bool) {
 	}
 	results_1 := results(Result, query_res, context.temp_allocator)
 	if len(results_1) < 1 {
-		log.error("couldn't find with seesion_token_p1 %s", p1)
+		log.error("couldn't find with session_token_p1 %s", p1)
 		return
 	}
 	result_1 := results_1[0]
-	if result_1.expires_at < result_1.now do return
+	if result_1.expires_at < result_1.now {
+		log.warn("expired cookie")
+		return
+	}
 	// change this to const cmp
-	if result_1.session_token_p2 != p2 do return
+	if result_1.session_token_p2 != p2 {
+		log.error("cookie p2 doesn't match db p2")
+		return
+	}
 
 	return result_1.user_id, true
 }
@@ -109,7 +124,11 @@ auth_handler_proc :: proc(
 
 	if !ok_user_id {
 		log.warnf("wasnt logged in: %s", req.url.raw)
-		http.headers_set(&res.headers, "location", "/login")
+		login_url := fmt.tprintf(
+			"/login?return_url=%s",
+			net.percent_encode(req.url.path),
+		)
+		http.headers_set(&res.headers, "location", login_url)
 		http.respond_with_status(res, .Temporary_Redirect)
 		return
 	}
@@ -120,34 +139,63 @@ auth_handler_proc :: proc(
 
 base64_url :: proc(bytes: []byte, allocator := context.allocator) -> string {
 	context.allocator = allocator
-  //odinfmt: disable
-  URL_ENC_TABLE :: [64]byte {
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
-    'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-    'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
-    'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-    'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
-    'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
-    'w', 'x', 'y', 'z', '0', '1', '2', '3', 
-    '4', '5', '6', '7', '8', '9', '-', '_',
+	
+  // odinfmt: disable
+  ENC_TABLE := [64]byte {
+      'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
+      'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
+      'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+      'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
+      'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
+      'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
+      'w', 'x', 'y', 'z', '0', '1', '2', '3',
+      '4', '5', '6', '7', '8', '9', '-', '_',
   }
-  //odinfmt: enable
-	x_64 := base64.encode(bytes, URL_ENC_TABLE)
-	x_eq := strings.index_byte(x_64, '=')
-	if x_eq != -1 do x_64 = x_64[:x_eq]
-	return x_64
+  // odinfmt: enable
+
+	encoded := base64.encode(bytes[:], ENC_TABLE)
+	first_pad := strings.index_byte(encoded, '=')
+	return encoded[:first_pad] if first_pad != -1 else encoded
 }
 
-// this wont right cuz currently anything thats not static gets authed
+// odinfmt: disable
+pkce_verifier :: proc( 
+  $N: int,
+	gen := context.random_generator,
+) -> [N]byte where 43 <= N, N <= 128 {
+  context.random_generator = gen
+
+  CHAR_SET := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+	verifier: [N]byte
+	for &b in verifier do b = CHAR_SET[rand.int_max(len(CHAR_SET))]
+	return verifier
+}
+// odinfmt: enable
+
+pkce_challenge :: proc(
+	verifier: []byte,
+	allocator := context.allocator,
+) -> string {
+	context.allocator = allocator
+
+	challenge: [32]byte
+	ctx: sha2.Context_256
+	sha2.init_256(&ctx)
+	sha2.update(&ctx, verifier)
+	sha2.final(&ctx, challenge[:])
+
+	return base64_url(challenge[:])
+}
+
 google_login :: proc(req: ^http.Request, res: ^http.Response) {
 	Query :: struct {
 		return_url: string,
 	}
 	q, ok_q := url_decode(Query, req.url.query, context.temp_allocator)
 	if !ok_q {
-		log.warn("couldn't parse", req.url.query)
-		http.respond_with_status(res, .Not_Found)
-		return
+		q = Query {
+			return_url = "/",
+		}
 	}
 
 	host, ok_host := http.headers_get(req.headers, "host")
@@ -157,13 +205,11 @@ google_login :: proc(req: ^http.Request, res: ^http.Response) {
 		return
 	}
 
-	verifier: [128]byte
-	assert(rand.read(verifier[:]) == 128)
-	c: sha3.Context
-	sha3.init_256(&c)
-	sha3.update(&c, verifier[:])
-	challenge: [32]byte // 256 / 32 == 8 (byte)
-	sha3.final(&c, challenge[:])
+
+	context.random_generator = crypto.random_generator()
+
+	verifier := pkce_verifier(128)
+	challenge := pkce_challenge(verifier[:], context.temp_allocator)
 
 	csrf_state := rand.int127()
 	state_bytes := (cast([^]byte)&csrf_state)[:size_of(csrf_state)]
@@ -172,12 +218,6 @@ google_login :: proc(req: ^http.Request, res: ^http.Response) {
 	conn := pool_get(&pool)
 	defer pool_release(&pool, conn)
 
-	// verifier_64 := base64_url(verifier[:], context.temp_allocator) 
-	verifier_64 := "idZgc-fJRnkM7mTroPviS4XQROOHGzJWZ2Vozbb963Q"
-	log.info(verifier_64)
-	// challenge_64 := base64_url(challenge[:], context.temp_allocator) 
-	challenge_64 := "wlIwEQAFJATHVPtcMdpklIVdzlkXK4TBYz8iT4ik6UE"
-	log.info(challenge_64)
 	return_url_esc := pq.escape_literal(
 		conn,
 		strings.clone_to_cstring(q.return_url, context.temp_allocator),
@@ -192,7 +232,7 @@ google_login :: proc(req: ^http.Request, res: ^http.Response) {
     )
     VALUES ('%s', '%s', %s)`,
 		state_64,
-		verifier_64,
+		verifier,
 		return_url_esc,
 	)
 	log.debug(cmd)
@@ -207,8 +247,8 @@ google_login :: proc(req: ^http.Request, res: ^http.Response) {
 	scheme := "https"
 	if strings.starts_with(host, "localhost") do scheme = "http"
 	if strings.starts_with(host, "127.0.0.1") do scheme = "http"
-  RESPONSE_TYPE :: "code"
-  CHALLENGE_METHOD :: "S256"
+	RESPONSE_TYPE :: "code"
+	CHALLENGE_METHOD :: "S256"
 	redirect_uri := fmt.tprintf("%s://%s/google_callback", scheme, host)
 	scopes := strings.join({GOOGLE_EMAIL_SCOPE}, " ", context.temp_allocator)
 	authorize_url := fmt.tprintf(
@@ -217,19 +257,12 @@ google_login :: proc(req: ^http.Request, res: ^http.Response) {
 		RESPONSE_TYPE,
 		GOOGLE_CLIENT_ID,
 		state_64,
-		challenge_64,
+		challenge,
 		CHALLENGE_METHOD,
-		redirect_uri,
-		scopes,
+		net.percent_encode(redirect_uri, context.temp_allocator),
+		net.percent_encode(scopes, context.temp_allocator),
 	)
-	log.debug(redirect_uri)
-	// authorize_url := fmt.tprintf(
-	// 	"%s?client_id=%s&state=%s&redirect_uri=%s",
-	// 	AUTH_URL,
-	// 	client_id,
-	// 	state_64,
-	// 	redirect_uri,
-	// )
+	log.debug(authorize_url)
 	http.headers_set(&res.headers, "location", authorize_url)
 	http.respond_with_status(res, .Temporary_Redirect)
 }
@@ -246,9 +279,6 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 		http.respond_with_status(res, .Not_Found)
 		return
 	}
-
-	// state_eq := strings.index_byte(q.state, '=')
-	// if state_eq != -1 do q.state = q.state[:state_eq]
 
 	host, ok_host := http.headers_get(req.headers, "host")
 	if !ok_host {
@@ -309,7 +339,6 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 	)
 
 	req_body: bytes.Buffer
-	// net.percent_encode()
 	bytes.buffer_init_allocator(&req_body, 0, 0, context.temp_allocator)
 	w: io.Writer = bytes.buffer_to_stream(&req_body)
 	log.debug(q.code)
@@ -323,14 +352,6 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 		net.percent_encode(GOOGLE_CLIENT_SECRET, context.temp_allocator),
 		net.percent_encode(redirect_uri, context.temp_allocator),
 	)
-	// fmt.wprintf(
-	// 	w,
-	// 	"code=%s&client_id=%s&client_secret=%s&redirect_uri=%s",
-	// 	net.percent_encode(q.code, context.temp_allocator),
-	// 	client_id,
-	// 	client_secret,
-	// 	net.percent_encode(redirect_uri, context.temp_allocator),
-	// )
 	token_req.body = req_body
 	token_res, err_token_res := httpc.request(
 		&token_req,
@@ -378,6 +399,11 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 		return
 	}
 	log.debug(token_body)
+	if token_body.access_token == "" {
+		log.error("access token is empty, verify request")
+		http.respond_with_status(res, .Not_Found)
+		return
+	}
 
 	user_info_res, err_user_info_res := httpc.get(
 		fmt.tprintf(
@@ -428,21 +454,13 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 		http.respond_with_status(res, .Not_Found)
 		return
 	}
+	if user_info_body.email == "" {
+		log.warn("missing email, make sure token was valid")
+		http.respond_with_status(res, .Not_Found)
+		return
+	}
 	log.debug(user_info_body)
 
-	// Github_Body :: struct {
-	// 	access_token, token_type, scope: string,
-	// }
-	// github_body: Google_Body
-	// unmarshal_err := json.unmarshal(transmute([]byte)plain_body, &github_body)
-	//  log.debug(unmarshal_err)
-	//  if unmarshal_err != nil {
-	// 	log.error(unmarshal_err)
-	// 	log.error(plain_body)
-	// 	http.respond_with_status(res, .Not_Found)
-	// 	return
-	//  }
-	//  log.debug(github_body)
 	if !user_info_body.verified_email {
 		log.warn("email must be verified")
 		http.respond_with_status(res, .Not_Found)
@@ -456,26 +474,6 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
       ON CONFLICT (email) 
       DO UPDATE SET picture = EXCLUDED.picture
       RETURNING id;`,
-
-
-		// `
-		//   WITH existing_user AS (
-		//     SELECT id FROM users WHERE email = '%[0]s'
-		//   )
-		//   INSERT INTO users (email, picture)
-		//     SELECT '%[0]s', '%[1]s'
-		//     WHERE NOT EXISTS (SELECT 1 FROM existing_user);`,
-		// `
-		//   WITH existing_user AS (
-		//     SELECT id FROM users WHERE email = '%[0]s'
-		//   )
-		//   INSERT INTO users (email, picture)
-		//     SELECT '%[0]s', '%[1]s'
-		//     WHERE NOT EXISTS (SELECT 1 FROM existing_user)
-		//   RETURNING COALESCE(
-		//     (SELECT id FROM existing_user), 
-		//     (SELECT id FROM users WHERE email = '%[0]s')
-		//   );`,
 		user_info_body.email,
 		user_info_body.picture,
 	)
@@ -541,9 +539,9 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 			name = "session_token",
 			value = fmt.tprintf("%s_%s", p_1, p_2),
 			path = "/",
-      http_only = true,
-      secure = true,
-      same_site = .Strict,
+			http_only = true,
+			secure = true,
+			same_site = .Strict,
 		},
 	)
 	cringe := fmt.tprintf(
@@ -571,10 +569,6 @@ Authed_Unauthed :: struct {
 	authed, unauthed: ^http.Router,
 }
 
-
-// | auth_middleware |> authed
-// | unauthed
-// | Not_Found
 authed_unauthed_handler :: proc(
 	authed_unauthed: ^Authed_Unauthed,
 ) -> http.Handler {
@@ -671,7 +665,6 @@ routes_try_auth :: proc(
 
 			req.url_params = captures
 			rh := route.handler
-			// maybe rh has problems do i have to new?
 			authed := http.middleware_proc(
 				new_clone(route.handler, context.temp_allocator),
 				auth_handler_proc,

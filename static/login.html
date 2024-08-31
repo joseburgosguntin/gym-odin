@@ -31,7 +31,7 @@
               <a
                 type="button"
                 class="btn bg-base-300 justify-start pl-10 pr-auto"
-                href="/google_login?return_url=%2Fedit"
+                href="/google_login"
               >
                 <img
                   class="h-6 w-6"
@@ -40,6 +40,17 @@
                 />
                 Continue with Google</a
               >
+              <script>
+                const urlParams = new URLSearchParams(window.location.search);
+                const returnUrl = urlParams.get("return_url");
+
+                if (returnUrl) {
+                  const nodeList = document.querySelectorAll("a");
+                  for (const a of nodeList) {
+                    a.href += `?return_url=${encodeURIComponent(returnUrl)}`
+                  }
+                }
+              </script>
               <!-- <button -->
               <!--   type="button" -->
               <!--   class="btn bg-base-300 justify-start pl-10 pr-auto" -->

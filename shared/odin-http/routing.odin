@@ -20,8 +20,14 @@ url_parse :: proc(raw: string) -> (url: URL) {
 	url.raw = raw
 	s := raw
 
+	// these cases should be found
+	// http://
+	// https://
+	// these should not
+	// <start_of_some_url>?scope=http://
+	// 0123456789
 	i := strings.index(s, "://")
-	if i >= 0 {
+	if i >= 0 && i <= 9 {
 		url.scheme = s[:i]
 		s = s[i+3:]
 	}
