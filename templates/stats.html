@@ -1,0 +1,29 @@
+<main class="px-8 pt-4 min-h-[80dvh] pb-20">
+  <div id="loading-stats" class="my-indicator flex flex-grow">
+    <span
+      class="loading loading-infinity mx-auto w-20 justify-center flex-grow h-[50dvh] md:max-w-[40dvh]"
+    ></span>
+  </div>
+  <canvas id="myChart"></canvas>
+  <script src="chart@4.4.3.js"></script>
+  <script>
+    new Chart(document.getElementById('myChart'), {
+      type: 'bar',
+      data: {
+        labels: ['Red', 'Blue', 'Yellow', 'Green', 'Purple', 'Orange'],
+        datasets: [{
+          label: '# of Votes',
+          data: [12, 19, 3, 5, 2, 3],
+          borderWidth: 1
+        }]
+      },
+      options: {
+        scales: {
+          y: {
+            beginAtZero: true
+          }
+        }
+      }
+    });
+  </script>
+</main>

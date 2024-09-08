@@ -107,13 +107,9 @@ serve :: proc() {
 	// They are very similar to regex patterns but a bit more limited, which makes them much easier to implement since Odin does not have a regex implementation.
 
 	// TODO: merge routine and exercises to a single route
-	http.route_get(&authed, "/", http.handler(index))
+	http.route_get(&authed, "/", http.handler(routines))
 	http.route_get(&authed, "/edit", http.handler(edit))
-	http.route_get(&authed, "/exercises", http.handler(exercises))
 	http.route_get(&authed, "/routine", http.handler(routine))
-	http.route_get(&authed, "/edit/routines", http.handler(edit_routines))
-	http.route_get(&authed, "/routines", http.handler(routines))
-	http.route_get(&authed, "/sets", http.handler(sets))
 	http.route_get(&authed, "/logout", http.handler(logout))
 
 	http.route_post(
@@ -373,12 +369,9 @@ delete_set :: proc(req: ^http.Request, res: ^http.Response) {
 		set_id: i32,
 	}
 	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	cmd := fmt.ctprintf(
-		`
+	cmd := fmt.ctprintf(`
     DELETE FROM sets
-    WHERE id = %d`,
-		form.set_id,
-	)
+    WHERE id = %d`, form.set_id)
 
 	query_res := exec_bin(conn, cmd)
 	if pq.result_status(query_res) != .Command_OK {
@@ -391,9 +384,53 @@ delete_set :: proc(req: ^http.Request, res: ^http.Response) {
 	http.respond_with_status(res, .OK)
 }
 
+
+Exercise_Query :: struct {
+	id:           i32,
+	name:         string,
+	weight, reps: i16,
+}
+
+Routine_Data :: struct {
+	name:      string,
+	exercises: []Exercise_Query,
+}
+
+routine_templater :: proc(routine_data: ^Routine_Data) -> Templater {
+	t: Templater
+	t.user_data = routine_data
+	t.template = proc(t: ^Templater, w: io.Writer) {
+		data := cast(^Routine_Data)t.user_data
+		fmt.wprint(w, `<main class="px-8 pt-4 min-h-[80dvh] pb-20">`);{
+			fmt.wprintf(
+				w,
+				`
+        <div hx-boost="true" class="breadcrumbs text-sm">
+          <ul>
+            <li><a href="/">Home</a></li>
+            <li>%[0]s</li>
+          </ul>
+        </div>`,
+				data.name,
+			)
+			if len(data.exercises) == 0 {
+				html := get_template("no-exercises")
+				fmt.wprint(w, html)
+				return
+			}
+			fmt.wprintf(w, `<ul class="grid gap-4 py-4">`);{
+				// TODO: the sets are still lazy
+				template := get_template("exercise-with-sets")
+				for e in data.exercises {
+					fmt.wprintf(w, template, e.id, e.name, e.weight, e.reps)
+				}
+			};fmt.wprintf(w, `</ul>`)
+		};fmt.wprint(w, `</main>`)
+	}
+	return t
+}
+
 routine :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
 	Form :: struct {
 		routine_id: i32,
 	}
@@ -402,6 +439,9 @@ routine :: proc(req: ^http.Request, res: ^http.Response) {
 		http.respond_with_status(res, .Not_Found)
 		return
 	}
+
+	conn := pool_get(&pool)
+	defer pool_release(&pool, conn)
 
 	cmd := fmt.ctprintf(
 		`
@@ -424,135 +464,78 @@ routine :: proc(req: ^http.Request, res: ^http.Response) {
 
 	name := result(string, query_res, 0, 0, context.temp_allocator)
 
-	template := get_template("routine")
-
-	html := fmt.aprintf(template, name, form.routine_id)
-	defer delete(html)
-
-	http.respond_html(res, html)
-}
-
-
-exercises :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-	Form :: struct {
-		routine_id: i32,
-	}
-	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	if !ok_form {
-		http.respond_with_status(res, .Not_Found)
-		return
-	}
-
-	cmd := fmt.ctprintf(
+	cmd_2 := fmt.ctprintf(
 		`
-    WITH most_recent_sets AS (
-      SELECT DISTINCT ON (s.exercise_id)
-        s.exercise_id,
-        s.weight,
-        s.reps,
-        s.end_datetime
-      FROM
-        sets s
-      JOIN
-        workouts w ON s.workout_id = w.id
-      JOIN
-        routines_exercises re ON re.exercise_id = s.exercise_id
-      WHERE
-        re.routine_id = %[0]d
-      ORDER BY
-        s.exercise_id, s.end_datetime DESC
-    )
-    SELECT
-      e.id AS exercise_id,
-      e.name AS exercise_name,
-      COALESCE(most_recent_sets.weight, 0)::SMALLINT AS recent_weight,
-      COALESCE(most_recent_sets.reps, 1)::SMALLINT AS recent_reps
-    FROM
-      exercises e
-    JOIN
-      routines_exercises re ON e.id = re.exercise_id
-    LEFT JOIN
-      most_recent_sets ON e.id = most_recent_sets.exercise_id
-    WHERE
-      re.routine_id = %[0]d
-    ORDER BY
-        e.id; `,
+     WITH most_recent_sets AS (
+       SELECT DISTINCT ON (s.exercise_id)
+         s.exercise_id,
+         s.weight,
+         s.reps,
+         s.end_datetime
+       FROM
+         sets s
+       JOIN
+         workouts w ON s.workout_id = w.id
+       JOIN
+         routines_exercises re ON re.exercise_id = s.exercise_id
+       WHERE
+         re.routine_id = %[0]d
+       ORDER BY
+         s.exercise_id, s.end_datetime DESC
+     )
+     SELECT
+       e.id AS exercise_id,
+       e.name AS exercise_name,
+       COALESCE(most_recent_sets.weight, 0)::SMALLINT AS recent_weight,
+       COALESCE(most_recent_sets.reps, 1)::SMALLINT AS recent_reps
+     FROM
+       exercises e
+     JOIN
+       routines_exercises re ON e.id = re.exercise_id
+     LEFT JOIN
+       most_recent_sets ON e.id = most_recent_sets.exercise_id
+     WHERE
+       re.routine_id = %[0]d
+     ORDER BY
+         e.id; `,
 		form.routine_id,
 	)
-
-	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Tuples_OK {
+	query_res_2 := exec_bin(conn, cmd_2)
+	if pq.result_status(query_res_2) != .Tuples_OK {
 		http.respond_with_status(res, .Internal_Server_Error)
 		log.error(pq.error_message(conn))
 		return
 	}
-	defer pq.clear(query_res)
+	defer pq.clear(query_res_2)
 
-	n_tuples := pq.n_tuples(query_res)
-	if n_tuples > 0 do assert(pq.n_fields(query_res) == 4)
+	if pq.n_tuples(query_res_2) > 0 do assert(pq.n_fields(query_res_2) == 4)
 
-	Exercise_Query :: struct {
-		id:           i32,
-		name:         string,
-		weight, reps: i16,
-	}
-	exercises := results(Exercise_Query, query_res, context.temp_allocator)
+	exercises := results(Exercise_Query, query_res_2, context.temp_allocator)
 
 	log.debug(exercises)
 
-	if len(exercises) == 0 {
-		html := get_template("no-exercises")
-		http.respond_html(res, html)
-		return
-	}
 	b := strings.builder_make(context.temp_allocator)
 	w := strings.to_writer(&b)
-	template := get_template("exercise-with-sets")
-	for exercise in exercises {
-		using exercise
-		fmt.wprintf(w, template, id, name, weight, reps)
+
+	routine_data := Routine_Data{name, exercises}
+	layout_data := Layout_Data {
+		Head_Data{title = name, scripts = {"htmx@2.0.0.js"}},
+		Top_Nav_Data {
+			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
+		},
+		routine_templater(&routine_data),
+		Bottom_Nav_Data{selection = .Home},
 	}
+	layout_templater := layout_templater(&layout_data)
+	layout_templater.template(&layout_templater, w)
 
 	http.respond_html(res, strings.to_string(b))
 }
 
-
-// TODO: I should make these just completly server rendered
-index :: proc(req: ^http.Request, res: ^http.Response) {
-	when HTTP_CACHE_HTML {
-		cache_control :: "public, max-age=31536000"
-		http.headers_set(&res.headers, "Cache-Control", cache_control)
-	}
-	http.respond_file(res, "./static/index.html")
-}
-
-Routine_Id_Name_Weekdays :: struct {
-	id:       i32,
-	name:     string,
-	weekdays: Weekdays,
-}
-
-
-earliest_weekday :: proc(weekdays: Weekdays) -> time.Weekday {
-	for w in time.Weekday do if w in weekdays do return .Monday
-	unreachable()
-}
-
 routines :: proc(req: ^http.Request, res: ^http.Response) {
-	// conn := pg_local_get()
 	conn := pool_get(&pool)
 	defer pool_release(&pool, conn)
-	Form :: struct {
-		weekday: u16,
-	}
-	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	log.debug(form)
-	if !ok_form {
-		http.respond_with_status(res, .Not_Found)
-		return
-	}
+
 	user_id := local_user_id
 	cmd := fmt.ctprintf(
 		`
@@ -576,6 +559,7 @@ routines :: proc(req: ^http.Request, res: ^http.Response) {
 		rs_res,
 		context.temp_allocator,
 	)
+	// sort by weekday server timezone
 	// user_ptr := context.user_ptr
 	// context.user_ptr = &form.weekday
 	slice.sort_by_key(
@@ -598,28 +582,68 @@ routines :: proc(req: ^http.Request, res: ^http.Response) {
 			return transmute(u16)weekdays
 		},
 	)
-	// context.user_ptr = user_ptr
-	// fmt.wprintf(w, `<ul hx-boost="true" class="grid gap-4 py-4">`)
-	if len(routines) == 0 {
-		html := get_template("no-routines")
-		http.respond_html(res, html)
-		return
+
+	routines_data := Routines_Data{routines}
+	layout_data := Layout_Data {
+		Head_Data{title = "Routines", scripts = {"htmx@2.0.0.js"}},
+		Top_Nav_Data {
+			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
+		},
+		routines_templater(&routines_data),
+		Bottom_Nav_Data{selection = .Home},
 	}
-	for r in routines {
-		fmt.wprintf(
-			w,
-			`
-      <li>
-        <a href="/routine?routine_id=%[0]d" class="btn btn-block btn-outline btn-accent">
-          %[1]s
-        </a>
-      </li> `,
-			r.id,
-			r.name,
-		)
+	layout_templater := layout_templater(&layout_data)
+	layout_templater.template(&layout_templater, w)
+
+	http.respond_html(res, strings.to_string(b))
+}
+
+Routine_Id_Name_Weekdays :: struct {
+	id:       i32,
+	name:     string,
+	weekdays: Weekdays,
+}
+
+Routines_Data :: struct {
+	routines: []Routine_Id_Name_Weekdays,
+}
+
+routines_templater :: proc(routines_data: ^Routines_Data) -> Templater {
+	t: Templater
+	t.user_data = routines_data
+	t.template = proc(t: ^Templater, w: io.Writer) {
+		data := cast(^Routines_Data)t.user_data
+		fmt.wprint(w, `<main class="px-8 pt-4 min-h-[80dvh] pb-20">`);{
+			if len(data.routines) == 0 {
+				html := get_template("no-routines")
+				return
+			}
+			fmt.wprintf(w, `<ul hx-boost="true" class="grid gap-4 py-4">`);{
+				for r in data.routines {
+					fmt.wprintf(
+						w,
+						`
+          <li>
+            <a 
+              href="/routine?routine_id=%[0]d" 
+              class="btn btn-block btn-outline btn-accent"
+            >
+              %[1]s
+            </a>
+          </li> `,
+						r.id,
+						r.name,
+					)
+				}
+			};fmt.wprintf(w, `</ul>`)
+		};fmt.wprint(w, `</main>`)
 	}
-	// fmt.wprintf(w, `</ul>`)
-	http.respond_html(res, strings.to_string(b), .OK)
+	return t
+}
+
+earliest_weekday :: proc(weekdays: Weekdays) -> time.Weekday {
+	for w in time.Weekday do if w in weekdays do return .Monday
+	unreachable()
 }
 
 static :: proc(req: ^http.Request, res: ^http.Response) {

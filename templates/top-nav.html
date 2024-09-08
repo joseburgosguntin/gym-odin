@@ -1,0 +1,30 @@
+<header hx-boost="true" class="navbar bg-base-300 sticky top-0 z-10">
+  <div class="navbar-start"></div>
+  <div class="navbar-center">
+    <a href="/" class="text-primary font-bold text-xl">Gym</a>
+  </div>
+  <div class="navbar-end">
+    <div class="dropdown dropdown-end">
+      <div
+        tabindex="0"
+        role="button"
+        class="btn btn-ghost btn-circle avatar"
+      >
+        <div class="w-10 rounded-full">
+          <img
+            alt="Tailwind CSS Navbar component"
+            src="%[0]s"
+          />
+        </div>
+      </div>
+      <ul
+        tabindex="0"
+        class="menu menu-sm dropdown-content bg-base-300 rounded-box z-[1] mt-3 w-52 p-2 gap-4 shadow"
+      >
+        <li><a class="btn btn-sm" disabled>Profile</a></li>
+        <li><a class="btn btn-sm" disabled>Settings</a></li>
+        <li><a class="mt-8 btn btn-sm btn-error" href="/logout">Logout</a></li>
+      </ul>
+    </div>
+  </div>
+</header>
