@@ -125,8 +125,9 @@ auth_handler_proc :: proc(
 	if !ok_user_id {
 		log.warnf("wasnt logged in: %s", req.url.raw)
 		login_url := fmt.tprintf(
-			"/login?return_url=%s",
+			"/login?return_url=%s?%s",
 			net.percent_encode(req.url.path),
+			net.percent_encode(req.url.query),
 		)
 		http.headers_set(&res.headers, "location", login_url)
 		http.respond_with_status(res, .Temporary_Redirect)
