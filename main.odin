@@ -2,15 +2,14 @@ package main
 
 
 import "core:container/lru"
-import "core:fmt"
+import "core:encoding/ini"
+import "core:io"
 import "core:log"
 import "core:mem"
 import "core:net"
 import "core:os"
 import "core:path/filepath"
-import "core:slice"
 import "core:strings"
-import "core:time"
 
 import http "./shared/odin-http"
 import pq "./shared/odin-postgresql"
@@ -44,11 +43,25 @@ main :: proc() {
 	logger := log.create_console_logger(LOGGER_LEVEL, LOGGER_OPTIONS)
 	defer log.destroy_console_logger(logger)
 	context.logger = logger
+	dotenv()
 
 	when TRACK_LEAKS {
 		track: mem.Tracking_Allocator
 		mem.tracking_allocator_init(&track, context.allocator)
+		defer mem.tracking_allocator_destroy(&track)
 		context.allocator = mem.tracking_allocator(&track)
+		defer {
+			for _, leak in track.allocation_map {
+				log.warnf("%v leaked %v bytes\n", leak.location, leak.size)
+			}
+			for bad_free in track.bad_free_array {
+				log.errorf(
+					"%v allocation %p was freed badly\n",
+					bad_free.location,
+					bad_free.memory,
+				)
+			}
+		}
 	}
 
 	when CACHE_TEMPLATE {
@@ -60,24 +73,12 @@ main :: proc() {
 		defer lru.destroy(&cache_template, true)
 	}
 
-	core_count := os.processor_core_count()
-	pool_init(&pool, core_count, 1 when DEV else core_count)
+	conn_count := os.processor_core_count()
+	when DEV {conn_count = min(4, conn_count)}
+	pool_init(&pool, conn_count, 1 when DEV else conn_count)
 	defer pool_destroy(&pool)
 
 	serve()
-
-	when TRACK_LEAKS {
-		for _, leak in track.allocation_map {
-			log.warnf("%v leaked %v bytes\n", leak.location, leak.size)
-		}
-		for bad_free in track.bad_free_array {
-			log.errorf(
-				"%v allocation %p was freed badly\n",
-				bad_free.location,
-				bad_free.memory,
-			)
-		}
-	}
 }
 
 serve :: proc() {
@@ -111,6 +112,7 @@ serve :: proc() {
 	http.route_get(&authed, "/edit", http.handler(edit))
 	http.route_get(&authed, "/routine", http.handler(routine))
 	http.route_get(&authed, "/logout", http.handler(logout))
+	http.route_get(&authed, "/stats", http.handler(stats))
 
 	http.route_post(
 		&authed,
@@ -134,11 +136,14 @@ serve :: proc() {
 		&{authed = &authed, unauthed = &unauthed},
 	)
 
-	log.info("Listening on http://localhost:6969")
 
 	traced := http.middleware_proc(&routed, trace_handler_proc)
-	address := net.IP4_Address{0, 0, 0, 0} when DOCKER else net.IP4_Loopback
-	err := http.listen_and_serve(&s, traced, net.Endpoint{address, 6969})
+	ADDRESS :: net.IP4_Address{0, 0, 0, 0} when DOCKER else net.IP4_Loopback
+	PORT :: 1318
+	log.infof("Listening on %v:%v", ADDRESS, PORT)
+	opts := http.Default_Server_Opts
+	when DEV {opts.thread_count = min(4, opts.thread_count)}
+	err := http.listen_and_serve(&s, traced, net.Endpoint{ADDRESS, PORT}, opts)
 	log.assertf(err == nil, "server stopped with error: %v", err)
 }
 
@@ -152,500 +157,6 @@ trace_handler_proc :: proc(
 	if ok_next do next.handle(next, req, res)
 }
 
-
-sets :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-	// TODO: remove workout_id from form, currently we will fetch it per set
-	// TODO: how will this figure out we are not in an old workout?
-	// TODO: maybe add chache for this
-	Form :: struct {
-		exercise_id: i32,
-	}
-	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	log.debug(form)
-	if !ok_form {
-		http.respond_with_status(res, .Not_Found)
-		return
-	}
-	user_id := local_user_id
-
-	cmd := fmt.ctprintf(
-		`
-    WITH recent_workout AS (
-        SELECT w.id AS workout_id
-        FROM workouts w
-        JOIN sets s ON w.id = s.workout_id
-        WHERE s.exercise_id = %[0]d
-        ORDER BY s.end_datetime DESC
-        LIMIT 1
-    ),
-    chosen_workout AS (
-        SELECT workout_id
-        FROM recent_workout
-        WHERE EXISTS (
-            SELECT 1
-            FROM sets s
-            WHERE s.workout_id = recent_workout.workout_id
-            AND s.end_datetime >= NOW() - INTERVAL '1 hour'
-        )
-        UNION ALL
-        SELECT NULL -- This will be used for cases when no recent workout is found
-        LIMIT 1
-    ),
-    existing_sets AS (
-        SELECT s.id, s.weight, s.reps
-        FROM sets s
-        JOIN chosen_workout cw ON s.workout_id = cw.workout_id
-        WHERE s.exercise_id = %[0]d
-    )
-    SELECT es.id, es.weight, es.reps
-    FROM existing_sets es
-
-    UNION ALL
-
-    SELECT
-        NULL::INTEGER AS id,
-        NULL::SMALLINT AS weight,
-        NULL::SMALLINT AS reps
-    WHERE FALSE;`,
-		form.exercise_id,
-	)
-
-	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Tuples_OK {
-		log.error(pq.error_message(conn))
-		http.respond_with_status(res, .Internal_Server_Error)
-		return
-	}
-	defer pq.clear(query_res)
-
-	Id_Weight_Reps :: struct {
-		id:           i32,
-		weight, reps: i16,
-	}
-	sets := results(Id_Weight_Reps, query_res, context.temp_allocator)
-
-	b := strings.builder_make(context.temp_allocator)
-	w := strings.to_writer(&b)
-	for set in sets {
-		fmt.wprintf(
-			w,
-			`
-      <tr>
-        <td>%[0]d</td>
-        <td>%[1]d</td>
-        <td>
-          <button
-            hx-target="closest tr"
-            hx-swap="delete"
-            hx-delete="/set?set_id=%[2]d"
-            class="btn btn-sm btn-block btn-error btn-outline"
-          >
-            X
-          </button>
-        </td>
-      </tr>`,
-			set.weight,
-			set.reps,
-			set.id,
-		)
-	}
-	http.respond_html(res, strings.to_string(b), .Created)
-}
-
-post_set :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-	// TODO: remove workout_id from form, currently we will fetch it per set
-	Form :: struct {
-		workout_id, exercise_id: i32,
-		weight, reps:            i16,
-	}
-	CheckedForm :: struct {
-		using f: Form,
-		ok:      bool,
-	}
-	form: CheckedForm
-	http.body(
-		req,
-		0x200,
-		&form,
-		proc(user_data: rawptr, body: http.Body, err: http.Body_Error) {
-			c := cast(^CheckedForm)user_data
-			c.f, c.ok = url_decode(Form, body, context.temp_allocator)
-		},
-	)
-	log.debug(form)
-	if !form.ok {
-		http.respond_with_status(res, .Not_Found)
-		return
-	}
-
-	user_id := local_user_id
-
-	cmd := fmt.ctprintf(
-		`
-    WITH recent_workout AS (
-        SELECT w.id AS workout_id, MAX(s.end_datetime) AS last_set_time
-        FROM workouts w
-        JOIN sets s ON w.id = s.workout_id
-        WHERE s.exercise_id = %[0]d
-        GROUP BY w.id
-        ORDER BY last_set_time DESC
-        LIMIT 1
-    ),
-    new_workout AS (
-        INSERT INTO workouts (user_id, start_datetime)
-        SELECT %[3]d, NOW() -- Replace %[3]d with the user_id parameter
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM recent_workout rw
-            WHERE rw.last_set_time >= NOW() - INTERVAL '1 hour'
-        )
-        RETURNING id AS workout_id
-    ),
-    chosen_workout AS (
-        SELECT workout_id FROM recent_workout
-        WHERE last_set_time >= NOW() - INTERVAL '1 hour'
-        UNION ALL
-        SELECT workout_id FROM new_workout
-        LIMIT 1
-    )
-    -- Perform the insert here
-    INSERT INTO sets (workout_id, exercise_id, weight, reps, end_datetime)
-    SELECT
-        cw.workout_id,
-        %[0]d,
-        %[1]d,
-        %[2]d,
-        CURRENT_TIMESTAMP
-    FROM chosen_workout cw
-    RETURNING id;
-    `,
-		form.exercise_id,
-		form.weight,
-		form.reps,
-		user_id,
-	)
-
-	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Tuples_OK {
-		log.error(pq.error_message(conn))
-		http.respond_with_status(res, .Internal_Server_Error)
-		return
-	}
-	defer pq.clear(query_res)
-
-	set_id := result(i32, query_res, 0, 0)
-
-	html := fmt.tprintf(
-		`
-    <tr>
-      <td>%[0]d</td>
-      <td>%[1]d</td>
-      <td>
-        <button
-          hx-target="closest tr"
-          hx-swap="delete"
-          hx-delete="/set?set_id=%[2]d"
-          class="btn btn-sm btn-block btn-error btn-outline"
-        >
-          X
-        </button>
-      </td>
-    </tr>`,
-		form.weight,
-		form.reps,
-		set_id,
-	)
-	http.respond_html(res, html, .Created)
-}
-
-delete_set :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-	Form :: struct {
-		set_id: i32,
-	}
-	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	cmd := fmt.ctprintf(`
-    DELETE FROM sets
-    WHERE id = %d`, form.set_id)
-
-	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Command_OK {
-		log.error(pq.error_message(conn))
-		http.respond_with_status(res, .Internal_Server_Error)
-		return
-	}
-	defer pq.clear(query_res)
-
-	http.respond_with_status(res, .OK)
-}
-
-
-Exercise_Query :: struct {
-	id:           i32,
-	name:         string,
-	weight, reps: i16,
-}
-
-Routine_Data :: struct {
-	name:      string,
-	exercises: []Exercise_Query,
-}
-
-routine_templater :: proc(routine_data: ^Routine_Data) -> Templater {
-	t: Templater
-	t.user_data = routine_data
-	t.template = proc(t: ^Templater, w: io.Writer) {
-		data := cast(^Routine_Data)t.user_data
-		fmt.wprint(w, `<main class="px-8 pt-4 min-h-[80dvh] pb-20">`);{
-			fmt.wprintf(
-				w,
-				`
-        <div hx-boost="true" class="breadcrumbs text-sm">
-          <ul>
-            <li><a href="/">Home</a></li>
-            <li>%[0]s</li>
-          </ul>
-        </div>`,
-				data.name,
-			)
-			if len(data.exercises) == 0 {
-				html := get_template("no-exercises")
-				fmt.wprint(w, html)
-				return
-			}
-			fmt.wprintf(w, `<ul class="grid gap-4 py-4">`);{
-				// TODO: the sets are still lazy
-				template := get_template("exercise-with-sets")
-				for e in data.exercises {
-					fmt.wprintf(w, template, e.id, e.name, e.weight, e.reps)
-				}
-			};fmt.wprintf(w, `</ul>`)
-		};fmt.wprint(w, `</main>`)
-	}
-	return t
-}
-
-routine :: proc(req: ^http.Request, res: ^http.Response) {
-	Form :: struct {
-		routine_id: i32,
-	}
-	form, ok_form := url_decode(Form, req.url.query, context.temp_allocator)
-	if !ok_form {
-		http.respond_with_status(res, .Not_Found)
-		return
-	}
-
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-
-	cmd := fmt.ctprintf(
-		`
-    SELECT name
-    FROM routines
-    WHERE id = %d`,
-		form.routine_id,
-	)
-
-	query_res := exec_bin(conn, cmd)
-	if pq.result_status(query_res) != .Tuples_OK {
-		log.error(pq.error_message(conn))
-		http.respond_with_status(res, .Internal_Server_Error)
-		return
-	}
-	defer pq.clear(query_res)
-
-	if pq.n_tuples(query_res) != 1 do return
-	assert(pq.n_fields(query_res) == 1)
-
-	name := result(string, query_res, 0, 0, context.temp_allocator)
-
-	cmd_2 := fmt.ctprintf(
-		`
-     WITH most_recent_sets AS (
-       SELECT DISTINCT ON (s.exercise_id)
-         s.exercise_id,
-         s.weight,
-         s.reps,
-         s.end_datetime
-       FROM
-         sets s
-       JOIN
-         workouts w ON s.workout_id = w.id
-       JOIN
-         routines_exercises re ON re.exercise_id = s.exercise_id
-       WHERE
-         re.routine_id = %[0]d
-       ORDER BY
-         s.exercise_id, s.end_datetime DESC
-     )
-     SELECT
-       e.id AS exercise_id,
-       e.name AS exercise_name,
-       COALESCE(most_recent_sets.weight, 0)::SMALLINT AS recent_weight,
-       COALESCE(most_recent_sets.reps, 1)::SMALLINT AS recent_reps
-     FROM
-       exercises e
-     JOIN
-       routines_exercises re ON e.id = re.exercise_id
-     LEFT JOIN
-       most_recent_sets ON e.id = most_recent_sets.exercise_id
-     WHERE
-       re.routine_id = %[0]d
-     ORDER BY
-         e.id; `,
-		form.routine_id,
-	)
-	query_res_2 := exec_bin(conn, cmd_2)
-	if pq.result_status(query_res_2) != .Tuples_OK {
-		http.respond_with_status(res, .Internal_Server_Error)
-		log.error(pq.error_message(conn))
-		return
-	}
-	defer pq.clear(query_res_2)
-
-	if pq.n_tuples(query_res_2) > 0 do assert(pq.n_fields(query_res_2) == 4)
-
-	exercises := results(Exercise_Query, query_res_2, context.temp_allocator)
-
-	log.debug(exercises)
-
-	b := strings.builder_make(context.temp_allocator)
-	w := strings.to_writer(&b)
-
-	routine_data := Routine_Data{name, exercises}
-	layout_data := Layout_Data {
-		Head_Data{title = name, scripts = {"htmx@2.0.0.js"}},
-		Top_Nav_Data {
-			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
-		},
-		routine_templater(&routine_data),
-		Bottom_Nav_Data{selection = .Home},
-	}
-	layout_templater := layout_templater(&layout_data)
-	layout_templater.template(&layout_templater, w)
-
-	http.respond_html(res, strings.to_string(b))
-}
-
-routines :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
-
-	user_id := local_user_id
-	cmd := fmt.ctprintf(
-		`
-    SELECT id, name, weekdays
-    FROM routines
-    WHERE user_id = %[0]d;`,
-		user_id,
-	)
-	rs_res := exec_bin(conn, cmd)
-	if pq.result_status(rs_res) != .Tuples_OK {
-		log.error(pq.error_message(conn))
-		http.respond_with_status(res, .Internal_Server_Error)
-		return
-	}
-	defer pq.clear(rs_res)
-	// TODO: results should return an ok
-	b := strings.builder_make(context.temp_allocator)
-	w := strings.to_writer(&b)
-	routines := results(
-		Routine_Id_Name_Weekdays,
-		rs_res,
-		context.temp_allocator,
-	)
-	// sort by weekday server timezone
-	// user_ptr := context.user_ptr
-	// context.user_ptr = &form.weekday
-	slice.sort_by_key(
-		routines,
-		proc(using r: Routine_Id_Name_Weekdays) -> u16 {
-			//     // weekday := (cast(^time.Weekday)context.user_ptr)^
-			//     weekday := time.Weekday.Wednesday
-			//     earliest := earliest_weekday(r.weekdays)
-			//     x := transmute(u16)r.weekdays +
-			//       (7 if cast(u8)weekday > cast(u8)earliest else 0)
-			//     log.debugf(
-			//       "ws: %v, w: %d, e: %d n0: %d, n1: %d",
-			//       r.weekdays,
-			//       cast(u8)weekday,
-			//       cast(u8)earliest,
-			//       transmute(u16)r.weekdays,
-			//       x,
-			//     )
-			//     return x
-			return transmute(u16)weekdays
-		},
-	)
-
-	routines_data := Routines_Data{routines}
-	layout_data := Layout_Data {
-		Head_Data{title = "Routines", scripts = {"htmx@2.0.0.js"}},
-		Top_Nav_Data {
-			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
-		},
-		routines_templater(&routines_data),
-		Bottom_Nav_Data{selection = .Home},
-	}
-	layout_templater := layout_templater(&layout_data)
-	layout_templater.template(&layout_templater, w)
-
-	http.respond_html(res, strings.to_string(b))
-}
-
-Routine_Id_Name_Weekdays :: struct {
-	id:       i32,
-	name:     string,
-	weekdays: Weekdays,
-}
-
-Routines_Data :: struct {
-	routines: []Routine_Id_Name_Weekdays,
-}
-
-routines_templater :: proc(routines_data: ^Routines_Data) -> Templater {
-	t: Templater
-	t.user_data = routines_data
-	t.template = proc(t: ^Templater, w: io.Writer) {
-		data := cast(^Routines_Data)t.user_data
-		fmt.wprint(w, `<main class="px-8 pt-4 min-h-[80dvh] pb-20">`);{
-			if len(data.routines) == 0 {
-				html := get_template("no-routines")
-				return
-			}
-			fmt.wprintf(w, `<ul hx-boost="true" class="grid gap-4 py-4">`);{
-				for r in data.routines {
-					fmt.wprintf(
-						w,
-						`
-          <li>
-            <a 
-              href="/routine?routine_id=%[0]d" 
-              class="btn btn-block btn-outline btn-accent"
-            >
-              %[1]s
-            </a>
-          </li> `,
-						r.id,
-						r.name,
-					)
-				}
-			};fmt.wprintf(w, `</ul>`)
-		};fmt.wprint(w, `</main>`)
-	}
-	return t
-}
-
-earliest_weekday :: proc(weekdays: Weekdays) -> time.Weekday {
-	for w in time.Weekday do if w in weekdays do return .Monday
-	unreachable()
-}
-
 static :: proc(req: ^http.Request, res: ^http.Response) {
 	path := req.url.path
 	ext := filepath.ext(req.url.path)
@@ -653,17 +164,17 @@ static :: proc(req: ^http.Request, res: ^http.Response) {
 	case "":
 		path = strings.concatenate({path, ".html"}, context.temp_allocator)
 		when HTTP_CACHE_HTML {
-			cache_control :: "public, max-age=31536000"
+			cache_control :: "public, max-age=31536000, immutable"
 			http.headers_set(&res.headers, "Cache-Control", cache_control)
 		}
 	case ".js":
 		when HTTP_CACHE_JS {
-			cache_control :: "public, max-age=31536000"
+			cache_control :: "public, max-age=31536000, immutable"
 			http.headers_set(&res.headers, "Cache-Control", cache_control)
 		}
 	case ".css":
 		when HTTP_CACHE_CSS {
-			cache_control :: "public, max-age=31536000"
+			cache_control :: "public, max-age=31536000, immutable"
 			http.headers_set(&res.headers, "Cache-Control", cache_control)
 		}
 	case ".png":
@@ -692,4 +203,55 @@ get_template :: proc(path: string, loc := #caller_location) -> string {
 		lru.set(&cache_template, path, transmute(string)bytes)
 	}
 	return transmute(string)bytes
+}
+
+dotenv :: proc() {
+	if os.exists(".env") {
+		log.info("using .env file")
+		data, data_ok := os.read_entire_file(".env", context.temp_allocator)
+		log.assert(data_ok, "missing .env file")
+		it := ini.iterator_from_string(transmute(string)data, {comment = "#"})
+		for key, value in ini.iterate(&it) {
+			unquoted := value
+			if value[0] == '"' && value[len(value) - 1] == '"' {
+				unquoted = value[1:len(value) - 1]
+			}
+			_, set := os.lookup_env(key)
+			if !set do os.set_env(key, unquoted)
+		}
+	} else {
+		log.warn("no .env file found")
+	}
+
+	DATABASE_URL_ENV :: "DATABASE_URL"
+	database_url, ok_database_url := os.lookup_env(
+		DATABASE_URL_ENV,
+		context.temp_allocator,
+	)
+	log.assertf(ok_database_url, "missing env var %s", DATABASE_URL_ENV)
+	CONNINFO = strings.clone_to_cstring(database_url)
+
+	GOOGLE_CLIENT_ID_ENV :: "GOOGLE_CLIENT_ID"
+	google_client_id, ok_google_client_id := os.lookup_env(
+		GOOGLE_CLIENT_ID_ENV,
+		context.temp_allocator,
+	)
+	log.assertf(
+		ok_google_client_id,
+		"missing env var %s",
+		GOOGLE_CLIENT_ID_ENV,
+	)
+	GOOGLE_CLIENT_ID = google_client_id
+
+	GOOGLE_CLIENT_SECRET_ENV :: "GOOGLE_CLIENT_SECRET"
+	google_client_secret, ok_google_client_secret := os.lookup_env(
+		GOOGLE_CLIENT_SECRET_ENV,
+		context.temp_allocator,
+	)
+	log.assertf(
+		ok_google_client_id,
+		"missing env var %s",
+		GOOGLE_CLIENT_SECRET_ENV,
+	)
+	GOOGLE_CLIENT_SECRET = google_client_secret
 }

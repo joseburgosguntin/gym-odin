@@ -270,6 +270,12 @@ routine_templater :: proc(routine_data: ^Routine_Data) -> Templater {
 	t.user_data = routine_data
 	t.template = proc(t: ^Templater, w: io.Writer) {
 		data := cast(^Routine_Data)t.user_data
+    fmt.wprint(w, `
+      <aside class="text-xl absolute left-4 top-4 z-50">
+        <div id="timer"> 00:00 </div>
+        <script src="/stopwatch.js"></script>
+      </aside>
+    `)
 		fmt.wprint(w, `<main class="px-8 pt-4 min-h-[80dvh] pb-20">`);{
 			fmt.wprintf(
 				w,

@@ -118,9 +118,9 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 	rw.r   = r
 
 	rw.w = io.Stream{
-		procedure = proc(stream_data: rawptr, mode: io.Stream_Mode, p: []byte, offset: i64, whence: io.Seek_From, loc := #caller_location) -> (n: i64, err: io.Error) {
+		procedure = proc(stream_data: rawptr, mode: io.Stream_Mode, p: []byte, offset: i64, whence: io.Seek_From) -> (n: i64, err: io.Error) {
 			ws :: bytes.buffer_write_string
-			write_chunk :: proc(b: ^bytes.Buffer, chunk: []byte, loc := #caller_location) {
+			write_chunk :: proc(b: ^bytes.Buffer, chunk: []byte) {
 				plen := i64(len(chunk))
 				if plen == 0 do return
 
@@ -132,7 +132,7 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 				_dynamic_add_len(&b.buf, len(size))
 
 				ws(b, "\r\n")
-				bytes.buffer_write(b, chunk, loc=loc)
+				bytes.buffer_write(b, chunk)
 				ws(b, "\r\n")
 			}
 
@@ -143,7 +143,7 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 			case .Flush:
 				assert(!rw.ended)
 
-				write_chunk(b, rw.buf[:], loc=loc)
+				write_chunk(b, rw.buf[:])
 				clear(&rw.buf)
 				return 0, nil
 
@@ -151,7 +151,7 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 				assert(!rw.ended)
 
 				// Write what is left.
-				write_chunk(b, rw.buf[:], loc=loc)
+				write_chunk(b, rw.buf[:])
 
 				// Signals the end of the body.
 				ws(b, "0\r\n\r\n")
@@ -161,7 +161,7 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 
 			case .Close:
 				// Write what is left.
-				write_chunk(b, rw.buf[:], loc=loc)
+				write_chunk(b, rw.buf[:])
 
 				if !rw.ended {
 					// Signals the end of the body.
@@ -179,17 +179,17 @@ response_writer_init :: proc(rw: ^Response_Writer, r: ^Response, buffer: []byte)
 				// No space, first write rw.buf, then check again for space, if still no space,
 				// fully write the given p.
 				if len(rw.buf) + len(p) > cap(rw.buf) {
-					write_chunk(b, rw.buf[:], loc=loc)
+					write_chunk(b, rw.buf[:])
 					clear(&rw.buf)
 
 					if len(p) > cap(rw.buf) {
-						write_chunk(b, p, loc=loc)
+						write_chunk(b, p)
 					} else {
 						append(&rw.buf, ..p)
 					}
 				} else {
 					// Space, append bytes to the buffer.
-					append(&rw.buf, ..p, loc=loc)
+					append(&rw.buf, ..p)
 				}
 
 				return i64(len(p)), .None

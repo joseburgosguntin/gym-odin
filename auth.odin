@@ -29,33 +29,6 @@ GOOGLE_EMAIL_SCOPE :: "https://www.googleapis.com/auth/userinfo.email"
 GOOGLE_CLIENT_ID: string
 GOOGLE_CLIENT_SECRET: string
 
-@(init)
-env_google :: proc() {
-	GOOGLE_CLIENT_ID_ENV :: "GOOGLE_CLIENT_ID"
-	google_client_id, ok_google_client_id := os.lookup_env(
-		GOOGLE_CLIENT_ID_ENV,
-		context.temp_allocator,
-	)
-	log.assertf(
-		ok_google_client_id,
-		"remember to export %s",
-		GOOGLE_CLIENT_ID_ENV,
-	)
-	GOOGLE_CLIENT_ID = google_client_id
-
-	GOOGLE_CLIENT_SECRET_ENV :: "GOOGLE_CLIENT_SECRET"
-	google_client_secret, ok_google_client_secret := os.lookup_env(
-		GOOGLE_CLIENT_SECRET_ENV,
-		context.temp_allocator,
-	)
-	log.assertf(
-		ok_google_client_id,
-		"remember to export %s",
-		GOOGLE_CLIENT_SECRET_ENV,
-	)
-	GOOGLE_CLIENT_SECRET = google_client_secret
-}
-
 @(thread_local)
 local_user_id: i32
 @(thread_local)

@@ -263,8 +263,6 @@ SINGLE_LETTER_WEEKDAYS :: [time.Weekday]rune {
 Weekdays :: bit_set[time.Weekday;u16]
 
 toggle_weekday :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
 	Form :: struct {
 		routine_id: i32,
 		weekday:    int,
@@ -276,6 +274,9 @@ toggle_weekday :: proc(req: ^http.Request, res: ^http.Response) {
 		http.respond_with_status(res, .Not_Found)
 		return
 	}
+
+	conn := pool_get(&pool)
+	defer pool_release(&pool, conn)
 
 	weekday := transmute(time.Weekday)form.weekday
 	if !form.toggled {
@@ -326,8 +327,6 @@ toggle_weekday :: proc(req: ^http.Request, res: ^http.Response) {
 }
 
 post_routine :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
 	Form :: struct {
 		routine_name: string,
 	}
@@ -351,6 +350,9 @@ post_routine :: proc(req: ^http.Request, res: ^http.Response) {
 		http.respond_with_status(res, .Not_Found)
 		return
 	}
+
+	conn := pool_get(&pool)
+	defer pool_release(&pool, conn)
 	user_id := local_user_id
 
 	cstr := strings.clone_to_cstring(form.routine_name, context.temp_allocator)
@@ -383,11 +385,10 @@ post_routine :: proc(req: ^http.Request, res: ^http.Response) {
 
 	routine_id := result(i32, r_res, cast(i32)0, cast(i32)0)
 
-	name := strings.clone_from_cstring(routine_name, context.temp_allocator)
 	edit_routine_template(
 		&Edit_Routine_Data {
 			id = routine_id,
-			name = name[1:len(name) - 1],
+			name = form.routine_name,
 			weekdays = {},
 			exercises = {},
 		},
@@ -397,8 +398,6 @@ post_routine :: proc(req: ^http.Request, res: ^http.Response) {
 }
 
 delete_routine :: proc(req: ^http.Request, res: ^http.Response) {
-	conn := pool_get(&pool)
-	defer pool_release(&pool, conn)
 	Form :: struct {
 		routine_id: int,
 	}
@@ -410,11 +409,16 @@ delete_routine :: proc(req: ^http.Request, res: ^http.Response) {
 		return
 	}
 
+	conn := pool_get(&pool)
+	defer pool_release(&pool, conn)
+
+  user_id := local_user_id
 	cmd := fmt.ctprintf(
 		`
     DELETE FROM routines
-    WHERE id = %d;`,
+    WHERE id = %d AND user_id = %d;`,
 		form.routine_id,
+    local_user_id,
 	)
 
 	query_res := exec_bin(conn, cmd)
@@ -510,11 +514,10 @@ post_routine_exercise :: proc(req: ^http.Request, res: ^http.Response) {
 
 	// TODO oob
 	// - all the add exercises inputs (to get the new auto_complete)
-	name := strings.clone_from_cstring(exercise_name, context.temp_allocator)
 	template := get_template("delete-routine-exercise")
 	html := fmt.tprintf(
 		template,
-		name[1:len(name) - 1],
+		form.exercise_name,
 		form.routine_id,
 		exercise_id,
 	)
@@ -537,6 +540,7 @@ delete_routine_exercise :: proc(req: ^http.Request, res: ^http.Response) {
 	conn := pool_get(&pool)
 	defer pool_release(&pool, conn)
 
+  // TODO: auth routine_exercise delete with the workout_id
 	cmd := fmt.ctprintf(
 		`
     DELETE FROM routines_exercises

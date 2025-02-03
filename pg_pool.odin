@@ -2,26 +2,11 @@ package main
 
 import "base:intrinsics"
 import "core:log"
-import "core:mem"
-import "core:os"
 import "core:slice"
-import "core:strings"
 
 import pq "./shared/odin-postgresql"
 
 CONNINFO: cstring
-
-@(init)
-env_db :: proc() {
-	DATABASE_URL_ENV ::
-		"DATABASE_URL_DEV" when #config(DB_DEV, DEV) else "DATABASE_URL_PROD"
-	database_url, ok_database_url := os.lookup_env(
-		DATABASE_URL_ENV,
-		context.temp_allocator,
-	)
-	log.assertf(ok_database_url, "remember to export %s", DATABASE_URL_ENV)
-	CONNINFO = strings.clone_to_cstring(database_url)
-}
 
 Pg_Pool_Atomic :: struct {
 	free_list:   []bool,
@@ -68,5 +53,7 @@ pool_release :: proc(p: ^Pg_Pool_Atomic, conn: pq.Conn) {
 pool_destroy :: proc(p: ^Pg_Pool_Atomic) {
 	// can we asume this is fine?
 	p.free_list = {}
+	delete(p.free_list)
 	for conn in p.connections do pq.finish(conn)
+	delete(p.connections)
 }

@@ -3,7 +3,7 @@ module.exports = {
   content: [
     "./static/**/*.{html,css}",
     "./templates/**/*.{html, css}",
-    "./main.odin",
+    "./*.odin",
   ],
   theme: {
     extend: {},

@@ -1,4 +1,4 @@
-//+private
+#+private
 package client
 
 import "core:bufio"
@@ -223,7 +223,6 @@ _ssl_stream_proc :: proc(
 	p: []byte,
 	offset: i64,
 	whence: io.Seek_From,
-	loc := #caller_location,
 ) -> (
 	n: i64,
 	err: io.Error,
@@ -259,7 +258,6 @@ _socket_stream_proc :: proc(
 	p: []byte,
 	offset: i64,
 	whence: io.Seek_From,
-	loc := #caller_location,
 ) -> (
 	n: i64,
 	err: io.Error,
