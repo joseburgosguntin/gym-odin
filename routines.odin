@@ -67,7 +67,7 @@ routines :: proc(req: ^http.Request, res: ^http.Response) {
 	layout_data := Layout_Data {
 		Head_Data{title = "Routines", scripts = {"htmx@2.0.0.js"}},
 		Top_Nav_Data {
-			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
+			profile_picture = "/web/android-chrome-512x512.png",
 		},
 		routines_templater(&routines_data),
 		Bottom_Nav_Data{selection = .Home},
@@ -237,7 +237,7 @@ routine :: proc(req: ^http.Request, res: ^http.Response) {
 	layout_data := Layout_Data {
 		Head_Data{title = name, scripts = {"htmx@2.0.0.js"}},
 		Top_Nav_Data {
-			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
+			profile_picture = "/web/android-chrome-512x512.png",
 		},
 		routine_templater(&routine_data),
 		Bottom_Nav_Data{selection = .Home},

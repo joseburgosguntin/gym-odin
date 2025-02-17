@@ -80,7 +80,7 @@ edit :: proc(req: ^http.Request, res: ^http.Response) {
 	layout_data := Layout_Data {
 		Head_Data{title = "Edit", scripts = {"htmx@2.0.0.js"}},
 		Top_Nav_Data {
-			profile_picture = "https://lh3.googleusercontent.com/a/AAcHTtcIA7reOrDrtSslK5DfbBWfqLtWbqxx4O1TVMQA1yO7Pg=s96-c",
+			profile_picture = "/web/android-chrome-512x512.png",
 		},
 		edit_templater(&edit_2_data),
 		Bottom_Nav_Data{selection = .Edit},
