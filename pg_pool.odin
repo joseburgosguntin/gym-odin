@@ -52,8 +52,8 @@ pool_release :: proc(p: ^Pg_Pool_Atomic, conn: pq.Conn) {
 
 pool_destroy :: proc(p: ^Pg_Pool_Atomic) {
 	// can we asume this is fine?
-	p.free_list = {}
 	delete(p.free_list)
+	p.free_list = {}
 	for conn in p.connections do pq.finish(conn)
 	delete(p.connections)
 }

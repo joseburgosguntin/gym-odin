@@ -364,6 +364,7 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 	token_body_unmarshal_err := json.unmarshal(
 		transmute([]byte)token_plain_body,
 		&token_body,
+    allocator = context.temp_allocator,
 	)
 	log.debug(token_body_unmarshal_err)
 	if token_body_unmarshal_err != nil {
@@ -420,6 +421,7 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 	user_info_unmarshal_err := json.unmarshal(
 		transmute([]byte)user_info_plain_body,
 		&user_info_body,
+    allocator = context.temp_allocator,
 	)
 	log.debug(user_info_unmarshal_err)
 	if user_info_unmarshal_err != nil {
@@ -471,11 +473,11 @@ google_callback :: proc(req: ^http.Request, res: ^http.Response) {
 	}
 	result_2 := results_2[0]
 
-	// rand.
+  old_gen := context.random_generator
 	context.random_generator = crypto.random_generator()
-	p_1 := uuid.to_string(uuid.generate_v4())
-	p_2 := uuid.to_string(uuid.generate_v4())
-	context.random_generator = rand.default_random_generator()
+	p_1 := uuid.to_string(uuid.generate_v4(), context.temp_allocator)
+	p_2 := uuid.to_string(uuid.generate_v4(), context.temp_allocator)
+	context.random_generator = old_gen
 
 	now := time.now()
 
